@@ -9,7 +9,8 @@ import pandas as pd
 from tqdm import tqdm
 
 from typing import Any, Dict, Optional, List, Tuple
-from plotnine import *
+import matplotlib.pyplot as plt
+import seaborn as sns
 import warnings
 
 
@@ -133,7 +134,6 @@ class DistributionClass:
 
         return self.loss_fn, loss
 
-
     def loss_fn_start_values(self,
                              params: torch.Tensor,
                              target: torch.Tensor) -> torch.Tensor:
@@ -194,7 +194,7 @@ class DistributionClass:
             Starting values for each distributional parameter.
         """
         # Convert target to torch.tensor
-        target = torch.tensor(target, dtype=torch.float32)
+        target = torch.tensor(target).reshape(-1, 1)
 
         # Initialize parameters
         params = [torch.tensor(0.5, requires_grad=True) for _ in range(self.n_dist_param)]
@@ -235,7 +235,7 @@ class DistributionClass:
                         target: torch.Tensor,
                         start_values: List[float],
                         requires_grad: bool = False,
-                        ) -> Tuple[np.ndarray, np.ndarray]:
+                        ) -> Tuple[List[torch.Tensor], np.ndarray]:
         """
         Function that returns the predicted parameters and the loss.
 
@@ -252,7 +252,7 @@ class DistributionClass:
 
         Returns
         -------
-        predt: torch.Tensor
+        predt: List of torch.Tensors
             Predicted parameters.
         loss: torch.Tensor
             Loss value.
@@ -355,7 +355,7 @@ class DistributionClass:
         pred_type : str
             Type of prediction:
             - "samples" draws n_samples from the predicted distribution.
-            - "quantile" calculates the quantiles from the predicted distribution.
+            - "quantiles" calculates the quantiles from the predicted distribution.
             - "parameters" returns the predicted distributional parameters.
             - "expectiles" returns the predicted expectiles.
         n_samples : int
@@ -446,30 +446,6 @@ class DistributionClass:
             grad = autograd(loss, inputs=predt, create_graph=True)
             hess = [torch.ones_like(grad[i]) for i in range(len(grad))]
 
-            # # Approximation of Hessian
-            # step_size = 1e-6
-            # predt_upper = [
-            #     response_fn(predt[i] + step_size).reshape(-1, 1) for i, response_fn in
-            #     enumerate(self.param_dict.values())
-            # ]
-            # dist_kwargs_upper = dict(zip(self.distribution_arg_names, predt_upper))
-            # dist_fit_upper = self.distribution(**dist_kwargs_upper)
-            # dist_samples_upper = dist_fit_upper.rsample((30,)).squeeze(-1)
-            # loss_upper = torch.nansum(self.crps_score(self.target, dist_samples_upper))
-            #
-            # predt_lower = [
-            #     response_fn(predt[i] - step_size).reshape(-1, 1) for i, response_fn in
-            #     enumerate(self.param_dict.values())
-            # ]
-            # dist_kwargs_lower = dict(zip(self.distribution_arg_names, predt_lower))
-            # dist_fit_lower = self.distribution(**dist_kwargs_lower)
-            # dist_samples_lower = dist_fit_lower.rsample((30,)).squeeze(-1)
-            # loss_lower = torch.nansum(self.crps_score(self.target, dist_samples_lower))
-            #
-            # grad_upper = autograd(loss_upper, inputs=predt_upper)
-            # grad_lower = autograd(loss_lower, inputs=predt_lower)
-            # hess = [(grad_upper[i] - grad_lower[i]) / (2 * step_size) for i in range(len(grad))]
-
         # Stabilization of Derivatives
         if self.stabilization != "None":
             grad = [self.stabilize_derivative(grad[i], type=self.stabilization) for i in range(len(grad))]
@@ -488,7 +464,6 @@ class DistributionClass:
         hess = hess.flatten()
 
         return grad, hess
-
 
     def stabilize_derivative(self, input_der: torch.Tensor, type: str = "MAD") -> torch.Tensor:
         """
@@ -588,12 +563,10 @@ class DistributionClass:
 
         return crps
 
-
     def dist_select(self,
                     target: np.ndarray,
                     candidate_distributions: List,
                     max_iter: int = 100,
-                    n_samples: int = 1000,
                     plot: bool = False,
                     figure_size: tuple = (10, 5),
                     ) -> pd.DataFrame:
@@ -609,8 +582,6 @@ class DistributionClass:
             List of candidate distributions.
         max_iter: int
             Maximum number of iterations for the optimization.
-        n_samples: int
-            Number of samples to draw from the fitted distribution.
         plot: bool
             If True, a density plot of the actual and fitted distribution is created.
         figure_size: tuple
@@ -642,15 +613,14 @@ class DistributionClass:
                         {self.loss_fn: np.nan,
                          "distribution": str(dist_name),
                          "params": [np.nan] * self.n_dist_param
-                        }
+                         }
                     )
                 dist_list.append(fit_df)
-                fit_df = pd.concat(dist_list).sort_values(by=self.loss_fn, ascending=True)
-                fit_df["rank"] = fit_df[self.loss_fn].rank().astype(int)
-                fit_df.set_index(fit_df["rank"], inplace=True)
                 pbar.update(1)
             pbar.set_description(f"Fitting of candidate distributions completed")
-
+            fit_df = pd.concat(dist_list).sort_values(by=self.loss_fn, ascending=True)
+            fit_df["rank"] = fit_df[self.loss_fn].rank().astype(int)
+            fit_df.set_index(fit_df["rank"], inplace=True)
         if plot:
             # Select best distribution
             best_dist = fit_df[fit_df["rank"] == 1].reset_index(drop=True)
@@ -670,29 +640,19 @@ class DistributionClass:
                 axis=1,
             )
             fitted_params = pd.DataFrame(fitted_params, columns=best_dist_sel.param_dict.keys())
-            fitted_params.columns = best_dist_sel.param_dict.keys()
+            n_samples = np.max([10000, target.shape[0]])
+            n_samples = np.where(n_samples > 500000, 100000, n_samples)
             dist_samples = best_dist_sel.draw_samples(fitted_params,
                                                       n_samples=n_samples,
                                                       seed=123).values
 
             # Plot actual and fitted distribution
-            plot_df_actual = pd.DataFrame({"y": target.reshape(-1,), "type": "Actual"})
-            plot_df_fitted = pd.DataFrame({"y": dist_samples.reshape(-1,),
-                                           "type": f"Best-Fit: {best_dist['distribution'].values[0]}"})
-            plot_df = pd.concat([plot_df_actual, plot_df_fitted])
-
-            print(
-                ggplot(plot_df,
-                       aes(x="y",
-                           color="type")) +
-                geom_density(alpha=0.5) +
-                theme_bw(base_size=15) +
-                theme(figure_size=figure_size,
-                      legend_position="right",
-                      legend_title=element_blank(),
-                      plot_title=element_text(hjust=0.5)) +
-                labs(title=f"Actual vs. Fitted Density")
-            )
+            plt.figure(figsize=figure_size)
+            sns.kdeplot(target.reshape(-1, ), label="Actual")
+            sns.kdeplot(dist_samples.reshape(-1, ), label=f"Best-Fit: {best_dist['distribution'].values[0]}")
+            plt.legend()
+            plt.title("Actual vs. Best-Fit Density", fontweight="bold", fontsize=16)
+            plt.show()
 
         fit_df.drop(columns=["rank", "params"], inplace=True)
 

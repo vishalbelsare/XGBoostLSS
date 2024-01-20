@@ -42,13 +42,6 @@ class XGBoostLSS:
         self.multivariate_label_expand = False
         self.multivariate_eval_label_expand = False
 
-    def __getstate__(self):
-        state = self.__dict__.copy()  # Copy the object's state
-        return state
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)  # Restore the object's state
-
     def set_params_adj(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Set parameters for distributional model.
@@ -486,7 +479,7 @@ class XGBoostLSS:
         pred_type : str
             Type of prediction:
             - "samples" draws n_samples from the predicted distribution.
-            - "quantile" calculates the quantiles from the predicted distribution.
+            - "quantiles" calculates the quantiles from the predicted distribution.
             - "parameters" returns the predicted distributional parameters.
             - "expectiles" returns the predicted expectiles.
         n_samples : int
@@ -541,7 +534,7 @@ class XGBoostLSS:
         explainer = shap.TreeExplainer(self.booster)
         shap_values = explainer(X)
 
-        param_pos = list(self.dist.param_dict.keys()).index(parameter)
+        param_pos = self.dist.distribution_arg_names.index(parameter)
 
         if plot_type == "Partial_Dependence":
             if self.dist.n_dist_param == 1:
